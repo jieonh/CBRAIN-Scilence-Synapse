@@ -1,8 +1,10 @@
 import cv2
 import mediapipe as mp
 import time
+import numpy as np
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
+from PIL import Image, ImageDraw, ImageFont
 
 # --- 1. 모델 파일 경로 설정 (다운로드 받은 파일) ---
 model_path = '/Users/hwangjieon/Desktop/2026CNWS/hand-tracking-using-mediapipe/hand_landmarker.task'
@@ -22,6 +24,42 @@ HAND_CONNECTIONS = [
     (9, 13), (13, 14), (14, 15), (15, 16), # 약지 (손바닥 연결 포함)
     (13, 17), (0, 17), (17, 18), (18, 19), (19, 20) # 소지 (손바닥 연결 포함)
 ]
+
+# --- 3-1. 손가락 개수 -> 한글 초성/카테고리 매핑 ---
+INITIAL_CONSONANTS = [
+    "ㄱ", "ㄴ", "ㄷ", "ㄹ", "ㅁ", "ㅂ", "ㅅ", "ㅇ", "ㅈ", "ㅊ",
+    "ㅋ", "ㅌ", "ㅍ", "ㅎ", "ㄲ", "ㄸ", "ㅃ", "ㅆ", "ㅉ"
+]
+
+CATEGORIES = [
+    "감정 및 상태",
+    "행동 및 동사",
+    "동물",
+    "스포츠",
+    "날씨 및 자연"
+]
+
+def load_korean_font(font_size=48):
+    font_candidates = [
+        "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+        "/System/Library/Fonts/AppleGothic.ttf",
+        "/Library/Fonts/AppleGothic.ttf"
+    ]
+    for path in font_candidates:
+        try:
+            return ImageFont.truetype(path, font_size)
+        except Exception:
+            continue
+    return ImageFont.load_default()
+
+KOREAN_FONT = load_korean_font(48)
+
+def draw_korean_text(img_bgr, text, position, color=(255, 255, 255), font=KOREAN_FONT):
+    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    pil_img = Image.fromarray(img_rgb)
+    draw = ImageDraw.Draw(pil_img)
+    draw.text(position, text, font=font, fill=color)
+    return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
 # --- 4. 콜백 및 변수 설정 ---
 detection_result = None
@@ -140,6 +178,22 @@ with HandLandmarker.create_from_options(options) as landmarker:
                     cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 0), 2)
         cv2.putText(img, f"Right Total: {total_right_fingers}", (split_x + 10, 40 + right_hand_count * 30),
                     cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 0), 2)
+
+        # 왼쪽 화면: 카테고리 매핑 (1~5)
+        if 1 <= total_left_fingers <= len(CATEGORIES):
+            left_category = CATEGORIES[total_left_fingers - 1]
+        else:
+            left_category = "?"
+        left_label = f"카테고리({total_left_fingers}): {left_category}"
+        img = draw_korean_text(img, left_label, (10, h - 60), color=(0, 255, 255))
+
+        # 오른쪽 화면: 초성 매핑 (1~19)
+        if 1 <= total_right_fingers <= len(INITIAL_CONSONANTS):
+            right_initial = INITIAL_CONSONANTS[total_right_fingers - 1]
+        else:
+            right_initial = "?"
+        right_label = f"초성({total_right_fingers}): {right_initial}"
+        img = draw_korean_text(img, right_label, (split_x + 10, h - 60), color=(0, 255, 255))
 
         cv2.imshow("Image", img)
         if cv2.waitKey(1) & 0xFF == ord('q'):
