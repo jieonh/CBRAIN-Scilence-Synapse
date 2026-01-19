@@ -2,9 +2,12 @@ import cv2
 import mediapipe as mp
 import time
 import numpy as np
+import queue
+import threading
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 from PIL import Image, ImageDraw, ImageFont
+from llm_pipeline import start_llm_worker
 
 # --- 1. 모델 파일 경로 설정 (다운로드 받은 파일) ---
 model_path = '/Users/hwangjieon/Desktop/2026CNWS/hand-tracking-using-mediapipe/hand_landmarker.task'
@@ -61,6 +64,28 @@ def draw_korean_text(img_bgr, text, position, color=(255, 255, 255), font=KOREAN
     draw.text(position, text, font=font, fill=color)
     return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
+def draw_multiline_text(img_bgr, lines, start_pos, line_gap, color=(255, 255, 255)):
+    x, y = start_pos
+    for line in lines:
+        img_bgr = draw_korean_text(img_bgr, line, (x, y), color=color)
+        y += line_gap
+    return img_bgr
+
+def wrap_lines(text, max_len):
+    if not text:
+        return ["-"]
+    lines = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            lines.append("-")
+            continue
+        while len(line) > max_len:
+            lines.append(line[:max_len])
+            line = line[max_len:]
+        lines.append(line)
+    return lines
+
 # --- 4. 콜백 및 변수 설정 ---
 detection_result = None
 
@@ -79,6 +104,10 @@ current_category = None
 category_history = []
 category_zero_since = None
 last_category_label = "카테고리: -"
+llm_queue = queue.Queue()
+llm_state = {"last_response": "-", "last_error": "", "last_input": "-"}
+quiz_start = time.time()
+QUIZ_DURATION = 300  # 5분 타임어택
 
 # 입력 안정화/구분 시간 (초)
 LETTER_STABLE_TIME = 0.25
@@ -102,6 +131,9 @@ options = HandLandmarkerOptions(
 
 # --- 6. 메인 실행 루프 ---
 cap = cv2.VideoCapture(0)
+
+# LLM 워커 시작
+worker_thread = start_llm_worker(llm_queue, llm_state)
 
 # 'with' 문을 사용하여 리소스를 안전하게 관리합니다.
 with HandLandmarker.create_from_options(options) as landmarker:
@@ -204,35 +236,50 @@ with HandLandmarker.create_from_options(options) as landmarker:
                     cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 0), 2)
 
         now = time.time()
+        elapsed = now - quiz_start
+        remaining = max(0, int(QUIZ_DURATION - elapsed))
+        is_active = elapsed < QUIZ_DURATION
+
+        # 타이머 표시
+        minutes = remaining // 60
+        seconds = remaining % 60
+        timer_text = f"TIME {minutes:02d}:{seconds:02d}"
+        img = draw_korean_text(img, timer_text, (10, 10), color=(255, 255, 255))
+        if not is_active:
+            img = draw_korean_text(img, "TIME UP", (split_x - 60, 10), color=(0, 0, 255))
 
         # 초성 입력 상태 업데이트 (오른쪽 손가락 개수 기준)
-        if total_right_fingers != last_right_count:
+        if is_active and total_right_fingers != last_right_count:
             last_right_count = total_right_fingers
             stable_since = now
 
-        if total_right_fingers == 0:
+        if is_active and total_right_fingers == 0:
             if zero_since is None:
                 zero_since = now
         else:
             zero_since = None
 
-        if 1 <= total_right_fingers <= len(INITIAL_CONSONANTS):
+        if is_active and 1 <= total_right_fingers <= len(INITIAL_CONSONANTS):
             if stable_since is not None and (now - stable_since) >= LETTER_STABLE_TIME:
                 if last_appended_count != total_right_fingers:
                     current_initials.append(INITIAL_CONSONANTS[total_right_fingers - 1])
                     last_appended_count = total_right_fingers
 
-        if zero_since is not None and (now - zero_since) >= ZERO_GAP_TIME:
+        if is_active and zero_since is not None and (now - zero_since) >= ZERO_GAP_TIME:
             last_appended_count = None
 
         # 왼손 주먹(0)으로 단어 종료 (왼손이 실제로 잡힐 때만)
-        if left_hand_count > 0 and total_left_fingers == 0:
+        if is_active and left_hand_count > 0 and total_left_fingers == 0:
             if left_zero_since is None:
                 left_zero_since = now
         else:
             left_zero_since = None
 
-        if left_zero_since is not None and (now - left_zero_since) >= LEFT_WORD_END_TIME and current_initials:
+        if is_active and left_zero_since is not None and (now - left_zero_since) >= LEFT_WORD_END_TIME and current_initials:
+            initials_text = " ".join(current_initials)
+            category_text = category_history[-1] if category_history else (current_category or "미정")
+            llm_state["last_input"] = f"{category_text} | {initials_text}"
+            llm_queue.put({"category": category_text, "initials": initials_text})
             last_completed_word = " ".join(current_initials)
             last_completed_time = now
             current_initials = []
@@ -240,22 +287,22 @@ with HandLandmarker.create_from_options(options) as landmarker:
             stable_since = None
 
         # 왼쪽 화면: 카테고리 매핑 (1~5)
-        if total_left_fingers != last_left_count:
+        if is_active and total_left_fingers != last_left_count:
             last_left_count = total_left_fingers
             left_stable_since = now
 
-        if left_hand_count > 0 and 1 <= total_left_fingers <= len(CATEGORIES):
+        if is_active and left_hand_count > 0 and 1 <= total_left_fingers <= len(CATEGORIES):
             if left_stable_since is not None and (now - left_stable_since) >= CATEGORY_STABLE_TIME:
                 current_category = CATEGORIES[total_left_fingers - 1]
                 last_category_label = f"카테고리({total_left_fingers}): {current_category}"
 
-        if left_hand_count > 0 and total_left_fingers == 0:
+        if is_active and left_hand_count > 0 and total_left_fingers == 0:
             if category_zero_since is None:
                 category_zero_since = now
         else:
             category_zero_since = None
 
-        if category_zero_since is not None and (now - category_zero_since) >= CATEGORY_DONE_TIME and current_category:
+        if is_active and category_zero_since is not None and (now - category_zero_since) >= CATEGORY_DONE_TIME and current_category:
             if not category_history or category_history[-1] != current_category:
                 category_history.append(current_category)
             category_zero_since = None
@@ -286,7 +333,25 @@ with HandLandmarker.create_from_options(options) as landmarker:
             completed_text = f"완료: {last_completed_word}"
             img = draw_korean_text(img, completed_text, (split_x + 10, h - 160), color=(255, 200, 0))
 
+        # LLM 출력은 별도 창에서 표시
+        llm_canvas = np.zeros((480, 860, 3), dtype=np.uint8)
+        llm_canvas[:] = (18, 18, 18)
+        cv2.rectangle(llm_canvas, (8, 8), (852, 472), (60, 60, 60), 2)
+
+        llm_canvas = draw_korean_text(llm_canvas, "LLM 출력", (24, 20), color=(255, 255, 255))
+        llm_canvas = draw_korean_text(
+            llm_canvas, f"입력: {llm_state['last_input']}", (24, 70), color=(180, 200, 255)
+        )
+
+        if llm_state["last_error"]:
+            error_lines = wrap_lines(llm_state["last_error"], 34)
+            llm_canvas = draw_multiline_text(llm_canvas, error_lines[:6], (24, 130), 34, color=(0, 0, 255))
+        else:
+            response_lines = wrap_lines(llm_state["last_response"], 34)
+            llm_canvas = draw_multiline_text(llm_canvas, response_lines[:8], (24, 130), 34, color=(160, 255, 180))
+
         cv2.imshow("Image", img)
+        cv2.imshow("LLM Output", llm_canvas)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
