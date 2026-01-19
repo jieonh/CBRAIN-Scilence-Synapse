@@ -61,11 +61,14 @@ with HandLandmarker.create_from_options(options) as landmarker:
         landmarker.detect_async(mp_image, frame_timestamp_ms)
 
         # 결과 그리기
-        total_all_fingers = 0
-        hand_count = 0
+        total_left_fingers = 0
+        total_right_fingers = 0
+        left_hand_count = 0
+        right_hand_count = 0
         if detection_result and detection_result.hand_landmarks:
             for idx, hand_landmarks in enumerate(detection_result.hand_landmarks):
                 h, w, c = img.shape
+                split_x = w // 2
                 
                 # 왼손/오른손 구분
                 hand_type = "Unknown"
@@ -84,8 +87,15 @@ with HandLandmarker.create_from_options(options) as landmarker:
                 for tip_id, pip_id in [(8, 6), (12, 10), (16, 14), (20, 18)]:
                     fingers_up += 1 if hand_landmarks[tip_id].y < hand_landmarks[pip_id].y else 0
                 
-                total_all_fingers += fingers_up
-                hand_count += 1
+                # 화면 좌/우 분할 기준으로 카운트
+                wrist_x = int(hand_landmarks[0].x * w)
+                is_left_side = wrist_x < split_x
+                if is_left_side:
+                    total_left_fingers += fingers_up
+                    left_hand_count += 1
+                else:
+                    total_right_fingers += fingers_up
+                    right_hand_count += 1
                 
                 # (A) 뼈대 그리기 (정의한 HAND_CONNECTIONS 사용)
                 for connection in HAND_CONNECTIONS:
@@ -111,15 +121,25 @@ with HandLandmarker.create_from_options(options) as landmarker:
                     if id in finger_tips:
                         cv2.circle(img, (cx, cy), 15, (255, 0, 255), cv2.FILLED)
                 
-                # 손가락 개수 표시
+                # 손가락 개수 표시 (화면 좌/우 영역에 표시)
                 info_text = f"{hand_type}: {fingers_up}"
-                cv2.putText(img, info_text, (10, 40 + idx * 30), 
-                           cv2.FONT_HERSHEY_PLAIN, 2, (0, 255, 0), 2)
+                if is_left_side:
+                    cv2.putText(img, info_text, (10, 40 + (left_hand_count - 1) * 30),
+                                cv2.FONT_HERSHEY_PLAIN, 2, (0, 255, 0), 2)
+                else:
+                    cv2.putText(img, info_text, (split_x + 10, 40 + (right_hand_count - 1) * 30),
+                                cv2.FONT_HERSHEY_PLAIN, 2, (0, 255, 0), 2)
         
-        # 총합 표시
-        if total_all_fingers > 0:
-            cv2.putText(img, f"Total: {total_all_fingers}", (10, 40 + hand_count * 30), 
-                       cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 0), 2)
+        # 분할선 표시
+        h, w, _ = img.shape
+        split_x = w // 2
+        cv2.line(img, (split_x, 0), (split_x, h), (0, 255, 255), 2)
+
+        # 좌/우 총합 표시
+        cv2.putText(img, f"Left Total: {total_left_fingers}", (10, 40 + left_hand_count * 30),
+                    cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 0), 2)
+        cv2.putText(img, f"Right Total: {total_right_fingers}", (split_x + 10, 40 + right_hand_count * 30),
+                    cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 0), 2)
 
         cv2.imshow("Image", img)
         if cv2.waitKey(1) & 0xFF == ord('q'):
