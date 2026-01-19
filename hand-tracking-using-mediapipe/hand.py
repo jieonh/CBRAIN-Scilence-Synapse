@@ -5,7 +5,7 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
 # --- 1. 모델 파일 경로 설정 (다운로드 받은 파일) ---
-model_path = '/Users/ryu/Documents/Dev/2026CNWS/hand-tracking-using-mediapipe/hand_landmarker.task'
+model_path = '/Users/hwangjieon/Desktop/2026CNWS/hand-tracking-using-mediapipe/hand_landmarker.task'
 
 # --- 2. 주요 클래스 별칭 설정 ---
 BaseOptions = mp.tasks.BaseOptions
@@ -40,7 +40,6 @@ options = HandLandmarkerOptions(
 
 # --- 6. 메인 실행 루프 ---
 cap = cv2.VideoCapture(0)
-pTime = 0
 
 # 'with' 문을 사용하여 리소스를 안전하게 관리합니다.
 with HandLandmarker.create_from_options(options) as landmarker:
@@ -62,9 +61,31 @@ with HandLandmarker.create_from_options(options) as landmarker:
         landmarker.detect_async(mp_image, frame_timestamp_ms)
 
         # 결과 그리기
+        total_all_fingers = 0
+        hand_count = 0
         if detection_result and detection_result.hand_landmarks:
-            for hand_landmarks in detection_result.hand_landmarks:
+            for idx, hand_landmarks in enumerate(detection_result.hand_landmarks):
                 h, w, c = img.shape
+                
+                # 왼손/오른손 구분
+                hand_type = "Unknown"
+                if detection_result.handedness and idx < len(detection_result.handedness):
+                    if detection_result.handedness[idx]:
+                        hand_type = detection_result.handedness[idx][0].category_name
+                
+                # 손가락 개수 계산
+                fingers_up = 0
+                # 엄지
+                if hand_type == "Right":
+                    fingers_up += 1 if hand_landmarks[4].x > hand_landmarks[3].x else 0
+                else:
+                    fingers_up += 1 if hand_landmarks[4].x < hand_landmarks[3].x else 0
+                # 나머지 손가락들
+                for tip_id, pip_id in [(8, 6), (12, 10), (16, 14), (20, 18)]:
+                    fingers_up += 1 if hand_landmarks[tip_id].y < hand_landmarks[pip_id].y else 0
+                
+                total_all_fingers += fingers_up
+                hand_count += 1
                 
                 # (A) 뼈대 그리기 (정의한 HAND_CONNECTIONS 사용)
                 for connection in HAND_CONNECTIONS:
@@ -86,21 +107,19 @@ with HandLandmarker.create_from_options(options) as landmarker:
                 for id, lm in enumerate(hand_landmarks):
                     cx, cy = int(lm.x * w), int(lm.y * h)
                     
-                    # 모든 관절에 작은 점 찍기 (선택사항)
-                    # cv2.circle(img, (cx, cy), 5, (0, 255, 0), cv2.FILLED)
-
                     # 손가락 끝 강조
                     if id in finger_tips:
-                        print(f"ID: {id}, X: {cx}, Y: {cy}")
                         cv2.circle(img, (cx, cy), 15, (255, 0, 255), cv2.FILLED)
-
-        # FPS 표시
-        cTime = time.time()
-        fps = 1 / (cTime - pTime) if (cTime - pTime) > 0 else 0
-        pTime = cTime
-
-        cv2.putText(img, str(int(fps)), (10, 70), cv2.FONT_HERSHEY_PLAIN, 3,
-                    (255, 0, 255), 3)
+                
+                # 손가락 개수 표시
+                info_text = f"{hand_type}: {fingers_up}"
+                cv2.putText(img, info_text, (10, 40 + idx * 30), 
+                           cv2.FONT_HERSHEY_PLAIN, 2, (0, 255, 0), 2)
+        
+        # 총합 표시
+        if total_all_fingers > 0:
+            cv2.putText(img, f"Total: {total_all_fingers}", (10, 40 + hand_count * 30), 
+                       cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 0), 2)
 
         cv2.imshow("Image", img)
         if cv2.waitKey(1) & 0xFF == ord('q'):
