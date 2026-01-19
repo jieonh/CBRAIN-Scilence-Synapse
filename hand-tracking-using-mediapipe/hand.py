@@ -64,6 +64,30 @@ def draw_korean_text(img_bgr, text, position, color=(255, 255, 255), font=KOREAN
 # --- 4. 콜백 및 변수 설정 ---
 detection_result = None
 
+# --- 4-1. 초성 입력 상태 관리 ---
+current_initials = []
+last_right_count = None
+stable_since = None
+last_appended_count = None
+zero_since = None
+left_zero_since = None
+last_completed_word = ""
+last_completed_time = 0.0
+last_left_count = None
+left_stable_since = None
+current_category = None
+category_history = []
+category_zero_since = None
+last_category_label = "카테고리: -"
+
+# 입력 안정화/구분 시간 (초)
+LETTER_STABLE_TIME = 0.25
+ZERO_GAP_TIME = 0.2
+COMPLETED_DISPLAY_TIME = 1.5
+LEFT_WORD_END_TIME = 0.4
+CATEGORY_STABLE_TIME = 0.25
+CATEGORY_DONE_TIME = 1.0
+
 def print_result(result, output_image, timestamp_ms):
     global detection_result
     detection_result = result
@@ -179,13 +203,71 @@ with HandLandmarker.create_from_options(options) as landmarker:
         cv2.putText(img, f"Right Total: {total_right_fingers}", (split_x + 10, 40 + right_hand_count * 30),
                     cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 0), 2)
 
+        now = time.time()
+
+        # 초성 입력 상태 업데이트 (오른쪽 손가락 개수 기준)
+        if total_right_fingers != last_right_count:
+            last_right_count = total_right_fingers
+            stable_since = now
+
+        if total_right_fingers == 0:
+            if zero_since is None:
+                zero_since = now
+        else:
+            zero_since = None
+
+        if 1 <= total_right_fingers <= len(INITIAL_CONSONANTS):
+            if stable_since is not None and (now - stable_since) >= LETTER_STABLE_TIME:
+                if last_appended_count != total_right_fingers:
+                    current_initials.append(INITIAL_CONSONANTS[total_right_fingers - 1])
+                    last_appended_count = total_right_fingers
+
+        if zero_since is not None and (now - zero_since) >= ZERO_GAP_TIME:
+            last_appended_count = None
+
+        # 왼손 주먹(0)으로 단어 종료 (왼손이 실제로 잡힐 때만)
+        if left_hand_count > 0 and total_left_fingers == 0:
+            if left_zero_since is None:
+                left_zero_since = now
+        else:
+            left_zero_since = None
+
+        if left_zero_since is not None and (now - left_zero_since) >= LEFT_WORD_END_TIME and current_initials:
+            last_completed_word = " ".join(current_initials)
+            last_completed_time = now
+            current_initials = []
+            last_appended_count = None
+            stable_since = None
+
         # 왼쪽 화면: 카테고리 매핑 (1~5)
+        if total_left_fingers != last_left_count:
+            last_left_count = total_left_fingers
+            left_stable_since = now
+
+        if left_hand_count > 0 and 1 <= total_left_fingers <= len(CATEGORIES):
+            if left_stable_since is not None and (now - left_stable_since) >= CATEGORY_STABLE_TIME:
+                current_category = CATEGORIES[total_left_fingers - 1]
+                last_category_label = f"카테고리({total_left_fingers}): {current_category}"
+
+        if left_hand_count > 0 and total_left_fingers == 0:
+            if category_zero_since is None:
+                category_zero_since = now
+        else:
+            category_zero_since = None
+
+        if category_zero_since is not None and (now - category_zero_since) >= CATEGORY_DONE_TIME and current_category:
+            if not category_history or category_history[-1] != current_category:
+                category_history.append(current_category)
+            category_zero_since = None
+
         if 1 <= total_left_fingers <= len(CATEGORIES):
             left_category = CATEGORIES[total_left_fingers - 1]
         else:
             left_category = "?"
-        left_label = f"카테고리({total_left_fingers}): {left_category}"
-        img = draw_korean_text(img, left_label, (10, h - 60), color=(0, 255, 255))
+        img = draw_korean_text(img, last_category_label, (10, h - 60), color=(0, 255, 255))
+
+        category_history_text = "카테고리 기록: " + (", ".join(category_history) if category_history else "-")
+        img = draw_korean_text(img, category_history_text, (10, h - 110), color=(0, 255, 255))
 
         # 오른쪽 화면: 초성 매핑 (1~19)
         if 1 <= total_right_fingers <= len(INITIAL_CONSONANTS):
@@ -194,6 +276,15 @@ with HandLandmarker.create_from_options(options) as landmarker:
             right_initial = "?"
         right_label = f"초성({total_right_fingers}): {right_initial}"
         img = draw_korean_text(img, right_label, (split_x + 10, h - 60), color=(0, 255, 255))
+
+        # 입력 중인 초성 시퀀스 표시 (오른쪽 화면)
+        input_text = "입력: " + (", ".join(current_initials) if current_initials else "-")
+        img = draw_korean_text(img, input_text, (split_x + 10, h - 110), color=(0, 255, 255))
+
+        # 완료된 단어 표시 (짧게)
+        if last_completed_word and (now - last_completed_time) <= COMPLETED_DISPLAY_TIME:
+            completed_text = f"완료: {last_completed_word}"
+            img = draw_korean_text(img, completed_text, (split_x + 10, h - 160), color=(255, 200, 0))
 
         cv2.imshow("Image", img)
         if cv2.waitKey(1) & 0xFF == ord('q'):
