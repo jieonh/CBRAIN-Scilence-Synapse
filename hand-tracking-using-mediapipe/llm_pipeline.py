@@ -11,11 +11,21 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1")
 OPENAI_URL = os.getenv("OPENAI_URL", "https://api.openai.com/v1/chat/completions")
 PROMPT_PATH = os.path.join(os.path.dirname(__file__), "prompt.txt")
+API_KEY_PATH = os.path.join(os.path.dirname(__file__), "openai_api_key.txt")
 
 
 def load_prompt_template():
     with open(PROMPT_PATH, "r", encoding="utf-8") as prompt_file:
         return prompt_file.read()
+
+
+def load_openai_api_key():
+    if OPENAI_API_KEY:
+        return OPENAI_API_KEY
+    if os.path.exists(API_KEY_PATH):
+        with open(API_KEY_PATH, "r", encoding="utf-8") as key_file:
+            return key_file.read().strip()
+    return ""
 
 
 def build_llm_prompt(initials_text, category_text):
@@ -38,8 +48,9 @@ def send_ollama_request(prompt):
 
 
 def send_openai_request(prompt):
-    if not OPENAI_API_KEY:
-        raise ValueError("OPENAI_API_KEY is not set")
+    api_key = load_openai_api_key()
+    if not api_key:
+        raise ValueError("OPENAI_API_KEY is not set (env or openai_api_key.txt)")
     payload = {
         "model": OPENAI_MODEL,
         "messages": [
@@ -51,7 +62,7 @@ def send_openai_request(prompt):
     data = json.dumps(payload).encode("utf-8")
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Authorization": f"Bearer {api_key}",
     }
     req = urllib.request.Request(OPENAI_URL, data=data, headers=headers)
     with urllib.request.urlopen(req, timeout=15) as resp:
